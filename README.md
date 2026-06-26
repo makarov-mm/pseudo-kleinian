@@ -25,11 +25,49 @@ The scene is rendered to an HDR texture and run through a small **bloom pipeline
 
 | Input | Action |
 | --- | --- |
+| **M** | **Toggle morph mode** — continuously eases through every variant in a loop |
+| **SPACE** | Next variant |
+| **Backspace** | Previous variant |
+| **1 – 6** | Jump straight to a variant |
 | Left mouse drag | Orbit camera |
 | Mouse wheel | Zoom |
 | E | Offline export: render one clean camera orbit to `frames/frame_XXXX.png` |
 
 The camera also drifts slowly on its own when idle.
+
+## Morph mode
+
+Press **M** to start morphing. Every parameter — box-fold extents, iteration
+count, carve radius, cross-section, the per-iteration twist, the Julia offset and
+the palette shift — is interpolated, so one shape physically dissolves into the
+next: the crystal sprouts a twist, the twist tightens into a helix, the helix
+melts into organic growths, and so on around the loop. It dwells on each variant
+for about a second (`MorphHold`), then glides to the next over a couple of seconds
+(`MorphTravel`, both near the top of `Program.cs`) with smoothstep easing. The
+camera distance breathes along with it. Press **M** again to stop on the current
+variant; SPACE / number keys still work while morphing to redirect where it goes
+next.
+
+## Variants
+
+One fragment shader, six distinct shapes — each preset is a different point in the
+estimator's parameter space (box-fold extents, iteration count, carve radius,
+cross-section thickness, a per-iteration twist, an optional Julia offset, and a
+palette shift). Switching also reframes the camera and shows the variant name in
+the title bar.
+
+| # | Name | What changes |
+| --- | --- | --- |
+| 1 | Cross | The original cross with axis spikes (default). |
+| 2 | Snowflake | Symmetric box-fold + extra iterations → a denser, lacier orb. |
+| 3 | Cathedral | Asymmetric folds and a larger carve sphere → open vaulted architecture. |
+| 4 | Spiral | A gentle per-iteration twist breaks the mirror symmetry into swirls. |
+| 5 | Helix | A stronger twist plus a hue rotation → corkscrew structure. |
+| 6 | Organic | A Julia constant added each iteration melts the crystal into fleshy growths. |
+
+All presets live in the `Presets[]` table at the top of `Program.cs` — copy a row,
+change the numbers, and you have a new variant; the shader already exposes every
+knob as a uniform.
 
 ## Offline export (smooth video without realtime lag)
 

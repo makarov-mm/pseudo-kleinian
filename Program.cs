@@ -39,12 +39,51 @@ internal static class Program
     static bool _drag;
     static int _lastX, _lastY;
 
-    // fractal parameters (tweakable)
-    static readonly Vector3 CSize = new(1.0f, 1.0f, 1.3f);
-    static float _size = 1.0f;
-    static int _iters = 14;
-    static float _bound = 1.2f;
-    static float _bloom = 0.75f;
+    // ---- Presets -------------------------------------------------------------
+    // Each preset is a distinct point in the fractal's parameter space. SPACE
+    // cycles through them; number keys 1..N jump straight to one. Switching also
+    // resets the camera distance to a value that frames that variant nicely.
+    readonly struct Preset
+    {
+        public readonly string Name;
+        public readonly Vector3 CSize;   // box-fold half-extents (main shape lever)
+        public readonly float Size;      // inversion radius factor
+        public readonly int Iters;       // fold/inversion iterations (detail)
+        public readonly float Bound;     // sphere the structure is carved out of
+        public readonly float Thickness; // cross-section: filigree (small) .. solid (big)
+        public readonly float Rot;       // per-iteration twist in xz (spirals/helices)
+        public readonly Vector3 JuliaC;  // constant added each iteration; zero = off (organic)
+        public readonly Vector3 ColShift;// palette hue/phase shift
+        public readonly float Bloom;     // bloom intensity
+        public readonly float Dist;      // camera distance applied on selection
+        public Preset(string name, Vector3 cs, float size, int iters, float bound,
+                      float thick, float rot, Vector3 jc, Vector3 col, float bloom, float dist)
+        { Name = name; CSize = cs; Size = size; Iters = iters; Bound = bound;
+          Thickness = thick; Rot = rot; JuliaC = jc; ColShift = col; Bloom = bloom; Dist = dist; }
+    }
+
+    static readonly Preset[] Presets =
+    {
+        // name           CSize                       size iters bound thick  rot    juliaC                        colShift                    bloom dist
+        new("Cross",      new(1.00f,1.00f,1.30f),     1.0f, 14,  1.20f, 0.928f, 0.00f, new(0,0,0),                  new(0.00f,0.00f,0.00f),     0.75f, 2.10f),
+        new("Snowflake",  new(0.92f,0.92f,0.92f),     1.0f, 16,  1.15f, 0.860f, 0.00f, new(0,0,0),                  new(-0.05f,0.04f,0.14f),    0.82f, 1.90f),
+        new("Cathedral",  new(1.00f,1.12f,1.22f),     1.0f, 14,  1.70f, 1.000f, 0.00f, new(0,0,0),                  new(0.12f,0.02f,-0.10f),    0.70f, 2.65f),
+        new("Spiral",     new(1.00f,1.00f,1.15f),     1.0f, 13,  1.30f, 0.900f, 0.22f, new(0,0,0),                  new(-0.18f,0.06f,0.22f),    0.82f, 2.20f),
+        new("Helix",      new(0.95f,1.00f,1.25f),     1.0f, 12,  1.35f, 0.950f, 0.42f, new(0,0,0),                  new(0.33f,0.00f,0.00f),     0.88f, 2.30f),
+        new("Organic",    new(1.00f,1.00f,1.00f),     1.0f, 10,  1.25f, 0.950f, 0.05f, new(0.00f,0.14f,-0.16f),     new(0.20f,0.40f,0.10f),     0.80f, 2.05f),
+    };
+    static int _preset;
+
+    // ---- Morph mode ----------------------------------------------------------
+    // Toggled with 'M'. Continuously eases from one preset to the next, looping
+    // through the whole table. Every numeric parameter is interpolated, so the
+    // shape, colour, twist and Julia offset all glide between variants.
+    static bool _morph;
+    static int _morphFrom, _morphTo;
+    static float _morphPhase;            // seconds into the current segment
+    const float MorphHold = 1.1f;        // dwell at each variant
+    const float MorphTravel = 2.2f;      // time spent gliding to the next
+    static IntPtr _hwnd;                 // kept so morph can update the title
 
     // offline export
     const int ExportW = 800, ExportH = 800, ExportFrames = 240;
@@ -57,6 +96,7 @@ internal static class Program
     static uint _fractalProg, _brightProg, _blurProg, _compProg, _copyProg;
     // fractal uniforms
     static int _uRes, _uTime, _uCamPos, _uCamTarget, _uCSize, _uSize, _uIters, _uBound;
+    static int _uThickness, _uRot, _uJuliaC, _uColShift;
     // bright / blur / composite / copy uniforms
     static int _bScene, _bSize;
     static int _blTex, _blSize, _blDir;
@@ -116,6 +156,10 @@ internal static class Program
         _uSize = GL.glGetUniformLocation(_fractalProg, Ascii("uSize"));
         _uIters = GL.glGetUniformLocation(_fractalProg, Ascii("uIters"));
         _uBound = GL.glGetUniformLocation(_fractalProg, Ascii("uBound"));
+        _uThickness = GL.glGetUniformLocation(_fractalProg, Ascii("uThickness"));
+        _uRot = GL.glGetUniformLocation(_fractalProg, Ascii("uRot"));
+        _uJuliaC = GL.glGetUniformLocation(_fractalProg, Ascii("uJuliaC"));
+        _uColShift = GL.glGetUniformLocation(_fractalProg, Ascii("uColShift"));
         _bScene = GL.glGetUniformLocation(_brightProg, Ascii("uScene"));
         _bSize = GL.glGetUniformLocation(_brightProg, Ascii("uTexSize"));
         _blTex = GL.glGetUniformLocation(_blurProg, Ascii("uTex"));
@@ -129,6 +173,8 @@ internal static class Program
         _coSize = GL.glGetUniformLocation(_copyProg, Ascii("uTexSize"));
 
         uint quadVao = MakeQuadVao();
+        _hwnd = hwnd;
+        ApplyPreset(hwnd, 0);
 
         var clock = Stopwatch.StartNew();
         double prevT = 0.0;
@@ -178,6 +224,11 @@ internal static class Program
             }
 
             EnsureLiveTargets();
+            if (_morph)
+            {
+                StepMorph(dt);
+                _dist = CurrentPreset().Dist;   // camera breathes with the morph
+            }
             if (!_drag) _yaw += dt * 0.05f;
             var eye = OrbitEye(_yaw, _pitch, _dist);
             RenderPipeline(_fboScene, _texScene, _w, _h, _fboB1, _texB1, _fboB2, _texB2,
@@ -214,10 +265,15 @@ internal static class Program
         GL.glUniform1f(_uTime, (float)time);
         GL.glUniform3f(_uCamPos, eye.X, eye.Y, eye.Z);
         GL.glUniform3f(_uCamTarget, target.X, target.Y, target.Z);
-        GL.glUniform3f(_uCSize, CSize.X, CSize.Y, CSize.Z);
-        GL.glUniform1f(_uSize, _size);
-        GL.glUniform1i(_uIters, _iters);
-        GL.glUniform1f(_uBound, _bound);
+        Preset pr = CurrentPreset();
+        GL.glUniform3f(_uCSize, pr.CSize.X, pr.CSize.Y, pr.CSize.Z);
+        GL.glUniform1f(_uSize, pr.Size);
+        GL.glUniform1i(_uIters, pr.Iters);
+        GL.glUniform1f(_uBound, pr.Bound);
+        GL.glUniform1f(_uThickness, pr.Thickness);
+        GL.glUniform1f(_uRot, pr.Rot);
+        GL.glUniform3f(_uJuliaC, pr.JuliaC.X, pr.JuliaC.Y, pr.JuliaC.Z);
+        GL.glUniform3f(_uColShift, pr.ColShift.X, pr.ColShift.Y, pr.ColShift.Z);
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4);
 
         // pass 2: bright-pass -> B1 (half res)
@@ -253,7 +309,7 @@ internal static class Program
         BindTex(GL.GL_TEXTURE0, sceneTex); GL.glUniform1i(_cScene, 0);
         BindTex(GL.GL_TEXTURE1, b1Tex); GL.glUniform1i(_cBloom, 1);
         GL.glUniform2f(_cSize, destW, destH);
-        GL.glUniform1f(_cInt, _bloom);
+        GL.glUniform1f(_cInt, pr.Bloom);
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4);
     }
 
@@ -357,7 +413,31 @@ internal static class Program
                 return IntPtr.Zero;
 
             case Win.WM_KEYDOWN:
-                if ((int)(long)wParam == 0x45) _startExport = true; // 'E'
+                {
+                    int vk = (int)(long)wParam;
+                    if (vk == 0x45) _startExport = true;                 // 'E'
+                    else if (vk == 0x4D)                                 // 'M' -> toggle morph
+                    {
+                        _morph = !_morph;
+                        if (_morph)
+                        {
+                            _morphFrom = _preset;
+                            _morphTo = (_preset + 1) % Presets.Length;
+                            _morphPhase = 0f;
+                        }
+                        else _dist = Presets[_preset].Dist;             // settle on current variant
+                        UpdateTitle(hWnd);
+                    }
+                    else if (vk == 0x20)                                 // SPACE -> next variant
+                        ApplyPreset(hWnd, (_preset + 1) % Presets.Length);
+                    else if (vk == 0x08)                                 // BACKSPACE -> previous
+                        ApplyPreset(hWnd, (_preset + Presets.Length - 1) % Presets.Length);
+                    else if (vk >= 0x31 && vk <= 0x39)                   // '1'..'9' -> jump
+                    {
+                        int idx = vk - 0x31;
+                        if (idx < Presets.Length) ApplyPreset(hWnd, idx);
+                    }
+                }
                 return IntPtr.Zero;
 
             case Win.WM_LBUTTONDOWN:
@@ -398,6 +478,65 @@ internal static class Program
         return Win.DefWindowProcW(hWnd, msg, wParam, lParam);
     }
 
+    static void ApplyPreset(IntPtr hwnd, int idx)
+    {
+        _preset = idx;
+        _dist = Presets[idx].Dist;   // reframe; the user can still zoom afterwards
+        // keep morph anchored at the chosen variant so it continues cleanly
+        _morphFrom = idx; _morphTo = (idx + 1) % Presets.Length; _morphPhase = 0f;
+        UpdateTitle(hwnd);
+    }
+
+    static void UpdateTitle(IntPtr hwnd)
+    {
+        string state = _morph
+            ? $"MORPH  {Presets[_morphFrom].Name} -> {Presets[_morphTo].Name}"
+            : $"[{_preset + 1}/{Presets.Length}] {Presets[_preset].Name}";
+        Win.SetWindowTextW(hwnd,
+            $"Pseudo-Kleinian — {state}   |   " +
+            "M morph · SPACE next · 1-6 pick · drag orbit · wheel zoom · E export");
+    }
+
+    // Linear blend of every preset parameter (iters rounded to the nearest int).
+    static Preset LerpPreset(in Preset a, in Preset b, float t) => new(
+        b.Name,
+        Vector3.Lerp(a.CSize, b.CSize, t),
+        Lerp(a.Size, b.Size, t),
+        (int)MathF.Round(Lerp(a.Iters, b.Iters, t)),
+        Lerp(a.Bound, b.Bound, t),
+        Lerp(a.Thickness, b.Thickness, t),
+        Lerp(a.Rot, b.Rot, t),
+        Vector3.Lerp(a.JuliaC, b.JuliaC, t),
+        Vector3.Lerp(a.ColShift, b.ColShift, t),
+        Lerp(a.Bloom, b.Bloom, t),
+        Lerp(a.Dist, b.Dist, t));
+
+    static float Lerp(float a, float b, float t) => a + (b - a) * t;
+
+    // The preset currently driving the shader: a static one, or a blend in morph mode.
+    static Preset CurrentPreset()
+    {
+        if (!_morph) return Presets[_preset];
+        // hold at the start of each segment, then ease across to the next variant
+        float travel = Math.Clamp((_morphPhase - MorphHold) / MorphTravel, 0f, 1f);
+        float s = travel * travel * (3f - 2f * travel);   // smoothstep easing
+        return LerpPreset(Presets[_morphFrom], Presets[_morphTo], s);
+    }
+
+    // Advance the morph timeline by dt; step to the next variant when a segment ends.
+    static void StepMorph(float dt)
+    {
+        _morphPhase += dt;
+        if (_morphPhase >= MorphHold + MorphTravel)
+        {
+            _morphPhase -= MorphHold + MorphTravel;
+            _morphFrom = _morphTo;
+            _morphTo = (_morphTo + 1) % Presets.Length;
+            _preset = _morphFrom;
+            UpdateTitle(_hwnd);
+        }
+    }
+
     private static int Short(IntPtr lParam, int shift) => (short)((((long)lParam) >> shift) & 0xFFFF);
 
     private static uint MakeQuadVao()
@@ -431,6 +570,10 @@ uniform vec3  uCSize;
 uniform float uSize;
 uniform int   uIters;
 uniform float uBound;
+uniform float uThickness;   // cross-section width of the structure
+uniform float uRot;         // per-iteration twist (radians) in the xz plane
+uniform vec3  uJuliaC;      // constant added each iteration (zero = off)
+uniform vec3  uColShift;    // palette phase shift
 
 const int   STEPS = 200;
 const float MAXD  = 18.0;
@@ -438,6 +581,8 @@ const float MAXD  = 18.0;
 float fractal(vec3 p, out vec4 trap){
     float scale = 1.0;
     vec4 tr = vec4(1e10);
+    float ca = cos(uRot), sa = sin(uRot);
+    mat2 rot = mat2(ca, -sa, sa, ca);
     for(int i = 0; i < uIters; i++){
         p = 2.0 * clamp(p, -uCSize, uCSize) - p;
         float r2 = max(dot(p, p), 1e-6);
@@ -445,10 +590,12 @@ float fractal(vec3 p, out vec4 trap){
         float k = max(uSize / r2, 1.0);
         p *= k;
         scale *= k;
+        p.xz = rot * p.xz;   // twist -> spirals / helices
+        p += uJuliaC;        // constant offset -> organic (zero = crystalline)
     }
     trap = tr;
     float rxy = length(p.xy);
-    return 0.7 * max(rxy - 0.92784, abs(rxy * p.z) / length(p)) / scale;
+    return 0.7 * max(rxy - uThickness, abs(rxy * p.z) / length(p)) / scale;
 }
 
 float map(vec3 p, out vec4 trap){
@@ -527,7 +674,7 @@ vec3 render(vec2 uv, float px){
     }
     glow = min(glow, 6.0);
 
-    vec3 glowCol = pal(0.45 + 0.5 * gtrap.y, vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.0, 0.18, 0.42));
+    vec3 glowCol = pal(0.45 + 0.5 * gtrap.y, vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.0, 0.18, 0.42) + uColShift);
 
     vec3 pos = ro + rd * t;
     if(!hit || length(pos) > uBound + 0.02){
@@ -537,9 +684,9 @@ vec3 render(vec2 uv, float px){
     vec3 n = calcNormal(pos, px * t);
 
     vec3 col = pal(0.10 + 0.95 * trap.x + 0.30 * trap.z,
-                   vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.50, 0.35, 0.18));
+                   vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.50, 0.35, 0.18) + uColShift);
     vec3 col2 = pal(0.45 + 0.75 * trap.y,
-                    vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.08, 0.22, 0.48));
+                    vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.08, 0.22, 0.48) + uColShift);
     col = mix(col, col2, 0.5);
     float lum = dot(col, vec3(0.299, 0.587, 0.114));
     col = mix(vec3(lum), col, 1.25);
@@ -562,7 +709,7 @@ vec3 render(vec2 uv, float px){
     vec3 shaded = col * lin;
 
     float crev = pow(1.0 - occ, 2.0);
-    vec3 emis = pal(0.6 + 0.5 * trap.z, vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.0, 0.33, 0.66));
+    vec3 emis = pal(0.6 + 0.5 * trap.z, vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.0, 0.33, 0.66) + uColShift);
     shaded += emis * crev * 0.9;
 
     vec3 V = -rd;
