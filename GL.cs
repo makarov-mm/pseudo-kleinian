@@ -3,35 +3,26 @@ using System.Runtime.InteropServices;
 
 namespace Kleinian;
 
-internal static class GL
+public static class GL
 {
     public const uint GL_COLOR_BUFFER_BIT = 0x4000;
-    public const uint GL_DEPTH_BUFFER_BIT = 0x0100;
-    public const uint GL_DEPTH_TEST = 0x0B71;
     public const uint GL_FLOAT = 0x1406;
-    public const uint GL_UNSIGNED_INT = 0x1405;
     public const uint GL_ARRAY_BUFFER = 0x8892;
-    public const uint GL_ELEMENT_ARRAY_BUFFER = 0x8893;
     public const uint GL_STATIC_DRAW = 0x88E4;
-    public const uint GL_DYNAMIC_DRAW = 0x88E8;
     public const uint GL_VERTEX_SHADER = 0x8B31;
     public const uint GL_FRAGMENT_SHADER = 0x8B30;
     public const uint GL_COMPILE_STATUS = 0x8B81;
     public const uint GL_LINK_STATUS = 0x8B82;
-    public const uint GL_TRIANGLES = 0x0004;
     public const uint GL_TRIANGLE_STRIP = 0x0005;
     public const uint GL_TEXTURE_2D = 0x0DE1;
     public const uint GL_TEXTURE0 = 0x84C0;
     public const uint GL_RGB = 0x1907;
-    public const uint GL_RGB8 = 0x8051;
     public const uint GL_UNSIGNED_BYTE = 0x1401;
     public const uint GL_TEXTURE_MIN_FILTER = 0x2801;
     public const uint GL_TEXTURE_MAG_FILTER = 0x2800;
     public const uint GL_TEXTURE_WRAP_S = 0x2802;
     public const uint GL_TEXTURE_WRAP_T = 0x2803;
     public const uint GL_LINEAR = 0x2601;
-    public const uint GL_LINEAR_MIPMAP_LINEAR = 0x2703;
-    public const uint GL_REPEAT = 0x2901;
     public const uint GL_CLAMP_TO_EDGE = 0x812F;
     public const uint GL_RGBA = 0x1908;
     public const uint GL_RGBA16F = 0x881A;
