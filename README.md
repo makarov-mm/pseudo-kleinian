@@ -32,8 +32,11 @@ The scene is rendered to an HDR texture and run through a small **bloom pipeline
 | Left mouse drag | Orbit camera |
 | Mouse wheel | Zoom |
 | E | Offline export: render one clean camera orbit to `frames/frame_XXXX.png` |
+| Esc | Quit (during an export: cancel the export) |
 
-The camera also drifts slowly on its own when idle.
+The camera also drifts slowly on its own when idle. The window is per-monitor
+DPI aware: on a HiDPI display it opens at the same apparent size and renders
+every physical pixel.
 
 ## Morph mode
 
@@ -42,8 +45,8 @@ count, carve radius, cross-section, the per-iteration twist, the Julia offset an
 the palette shift — is interpolated, so one shape physically dissolves into the
 next: the crystal sprouts a twist, the twist tightens into a helix, the helix
 melts into organic growths, and so on around the loop. It dwells on each variant
-for about a second (`MorphHold`), then glides to the next over a couple of seconds
-(`MorphTravel`, both near the top of `Program.cs`) with smoothstep easing. The
+for about a second (`Morph.Hold`), then glides to the next over a couple of seconds
+(`Morph.Travel`, both in `Preset.cs`) with smoothstep easing. The
 camera distance breathes along with it. Press **M** again to stop on the current
 variant; SPACE / number keys still work while morphing to redirect where it goes
 next.
@@ -65,13 +68,13 @@ the title bar.
 | 5 | Helix | A stronger twist plus a hue rotation → corkscrew structure. |
 | 6 | Organic | A Julia constant added each iteration melts the crystal into fleshy growths. |
 
-All presets live in the `Presets[]` table at the top of `Program.cs` — copy a row,
-change the numbers, and you have a new variant; the shader already exposes every
-knob as a uniform.
+All presets live in the `Preset.All` table in `Preset.cs` — copy a row, change
+the numbers, and you have a new variant; the shader already exposes every knob
+as a uniform and the number keys pick by index.
 
 ## Offline export (smooth video without realtime lag)
 
-Press **E** to render exactly one full camera orbit to disk as a numbered PNG sequence in a `frames/` folder (1920x1080, 240 frames by default). Each frame is rendered to an offscreen framebuffer and read back with `glReadPixels`, then written with a small built-in PNG encoder (BCL `ZLibStream`, no image library). Because frames are written one-by-one rather than in realtime, the resulting video is perfectly smooth no matter how heavy the shader is.
+Press **E** to render exactly one full camera orbit to disk as a numbered PNG sequence in a `frames/` folder next to the working directory (1920x1080, 240 frames by default; the title bar shows the progress and the full path, Esc cancels). Each frame is rendered to an offscreen framebuffer and read back with `glReadPixels`, then written with a small built-in PNG encoder (BCL `ZLibStream`, no image library). Because frames are written one-by-one rather than in realtime, the resulting video is perfectly smooth no matter how heavy the shader is.
 
 A `frames/make_video.txt` is written alongside the frames with the ffmpeg command to assemble them, e.g.:
 
@@ -79,17 +82,29 @@ A `frames/make_video.txt` is written alongside the frames with the ffmpeg comman
 ffmpeg -framerate 30 -i frame_%04d.png -c:v libx264 -pix_fmt yuv420p -crf 18 kleinian.mp4
 ```
 
-Export resolution and frame count are the `ExportW`, `ExportH`, `ExportFrames` constants in `Program.cs` (bump to 3840x2160 for 4K).
+Export resolution and frame count are the `Width`, `Height`, `FrameCount` constants in `FrameExporter.cs` (bump to 3840x2160 for 4K).
 
 ## Tweakable parameters
 
-In `Program.cs`:
+Per preset, in `Preset.cs`:
 
-- `CSize` — the box-fold half-extents (default `vec3(1.0, 1.0, 1.3)`); the main shape control.
-- `_size` — the inversion radius factor (default `1.0`).
-- `_iters` — fold/inversion iterations (default `10`); more iterations add detail at the cost of speed.
+- `CSize` — the box-fold half-extents (`(1.0, 1.0, 1.3)` for the default Cross); the main shape control.
+- `Size` — the inversion radius factor (`1.0`).
+- `Iters` — fold/inversion iterations (10–16); more iterations add detail at the cost of speed.
+- `Thickness` — the cross-section of the structure; with the final `max(...)` term of the estimator in `Shaders.cs` it is the thing to experiment with.
 
-The `0.92784` constant and the final `max(...)` term in the estimator set the cross-section of the structure and can be experimented with.
+## Project layout
+
+| File | Role |
+| --- | --- |
+| `Program.cs` | main loop, camera, input, morph and export state |
+| `Preset.cs` | the preset table, parameter blending, morph timeline |
+| `Renderer.cs` | the frame: raymarch → HDR, bright-pass, blur ping-pong, composite; render targets |
+| `Shaders.cs` | GLSL 3.30 sources |
+| `FrameExporter.cs` | offline orbit export to PNG |
+| `Png.cs` | minimal PNG writer (zlib via `ZLibStream`, CRC-32 by hand) |
+| `Window.cs` | Win32 window, OpenGL 3.3 core context, message pump, DPI awareness |
+| `Win32.cs` / `GL.cs` | the Win32/WGL and OpenGL entry points used, via `LibraryImport` and unmanaged function pointers |
 
 ## Build & run
 
@@ -97,7 +112,7 @@ The `0.92784` constant and the final `max(...)` term in the estimator set the cr
 dotnet run -c Release
 ```
 
-Requires Windows and the .NET 8 SDK.
+Requires Windows and the .NET 11 SDK.
 
 ## Support
 

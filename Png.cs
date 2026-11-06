@@ -1,106 +1,81 @@
-﻿using System;
-using System.IO;
+// Minimal PNG writer (8-bit RGB, no filtering), BCL only: zlib through
+// ZLibStream, CRC-32 by hand.
+using System.Buffers.Binary;
 using System.IO.Compression;
-using System.Text;
 
 namespace Kleinian;
 
-// Minimal PNG writer (24-bit RGB), BCL-only: zlib via ZLibStream, manual CRC32.
-public static class Png
+internal static class Png
 {
-    static uint[] _crc;
+    private static readonly byte[] s_signature = [137, 80, 78, 71, 13, 10, 26, 10];
+    private static readonly uint[] s_crcTable = BuildCrcTable();
 
-    public static void WriteRgbFlip(string path, int w, int h, byte[] rgbBottomUp)
+    // `rgbBottomUp` is laid out the way glReadPixels returns it: the first
+    // row is the bottom of the image. PNG stores rows top-down.
+    public static void WriteRgb(string path, int width, int height, ReadOnlySpan<byte> rgbBottomUp)
     {
-        int stride = w * 3;
-        var raw = new byte[(stride + 1) * h];
+        int stride = width * 3;
+        if (rgbBottomUp.Length < stride * height) throw new ArgumentException("pixel buffer too small", nameof(rgbBottomUp));
 
-        for (int y = 0; y < h; y++)
+        byte[] idat;
+        using (var compressed = new MemoryStream(stride * height / 2))
         {
-            int src = (h - 1 - y) * stride; // glReadPixels is bottom-up; PNG is top-down
-            int dst = y * (stride + 1);
-            raw[dst] = 0; // filter type 0 (none)
-            Buffer.BlockCopy(rgbBottomUp, src, raw, dst + 1, stride);
-        }
-
-        byte[] comp;
-
-        using (var ms = new MemoryStream())
-        {
-            using (var z = new ZLibStream(ms, CompressionLevel.Optimal, true))
+            using (var zlib = new ZLibStream(compressed, CompressionLevel.Optimal, leaveOpen: true))
             {
-                z.Write(raw, 0, raw.Length);
-            }
-
-            comp = ms.ToArray();
-        }
-
-        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
-        fs.Write([137, 80, 78, 71, 13, 10, 26, 10], 0, 8);
-
-        var ihdr = new byte[13];
-        BE(ihdr, 0, (uint)w);
-        BE(ihdr, 4, (uint)h);
-        ihdr[8] = 8; // bit depth
-        ihdr[9] = 2; // colour type 2 = RGB
-        Chunk(fs, "IHDR", ihdr);
-        Chunk(fs, "IDAT", comp);
-        Chunk(fs, "IEND", Array.Empty<byte>());
-    }
-
-    private static void BE(byte[] b, int o, uint v)
-    {
-        b[o] = (byte)(v >> 24);
-        b[o + 1] = (byte)(v >> 16);
-        b[o + 2] = (byte)(v >> 8);
-        b[o + 3] = (byte)v;
-    }
-
-    private static void Chunk(Stream stream, string type, byte[] data)
-    {
-        var len = new byte[4];
-        BE(len, 0, (uint)data.Length);
-        stream.Write(len, 0, 4);
-        byte[] t = Encoding.ASCII.GetBytes(type);
-        stream.Write(t, 0, 4);
-        stream.Write(data, 0, data.Length);
-        uint crc = Crc(t, data);
-        var c = new byte[4];
-        BE(c, 0, crc);
-        stream.Write(c, 0, 4);
-    }
-
-    private static uint Crc(byte[] type, byte[] data)
-    {
-        if (_crc is null)
-        {
-            _crc = new uint[256];
-
-            for (uint n = 0; n < 256; n++)
-            {
-                uint c = n;
-
-                for (int k = 0; k < 8; k++)
+                ReadOnlySpan<byte> filterNone = [0];
+                for (int y = height - 1; y >= 0; y--)
                 {
-                    c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+                    zlib.Write(filterNone);
+                    zlib.Write(rgbBottomUp.Slice(y * stride, stride));
                 }
-
-                _crc[n] = c;
             }
+            idat = compressed.ToArray();
         }
 
-        uint crc = 0xFFFFFFFFu;
+        Span<byte> ihdr = stackalloc byte[13];
+        BinaryPrimitives.WriteInt32BigEndian(ihdr, width);
+        BinaryPrimitives.WriteInt32BigEndian(ihdr[4..], height);
+        ihdr[8] = 8;   // bit depth
+        ihdr[9] = 2;   // colour type: RGB
+        ihdr[10] = 0;  // compression
+        ihdr[11] = 0;  // filter method
+        ihdr[12] = 0;  // no interlace
 
-        foreach (byte b in type)
+        using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16);
+        file.Write(s_signature);
+        WriteChunk(file, "IHDR"u8, ihdr);
+        WriteChunk(file, "IDAT"u8, idat);
+        WriteChunk(file, "IEND"u8, []);
+    }
+
+    private static void WriteChunk(Stream stream, ReadOnlySpan<byte> type, ReadOnlySpan<byte> data)
+    {
+        Span<byte> word = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(word, data.Length);
+        stream.Write(word);
+        stream.Write(type);
+        stream.Write(data);
+        BinaryPrimitives.WriteUInt32BigEndian(word, Crc32(Crc32(0xFFFFFFFFu, type), data) ^ 0xFFFFFFFFu);
+        stream.Write(word);
+    }
+
+    private static uint Crc32(uint crc, ReadOnlySpan<byte> bytes)
+    {
+        foreach (byte b in bytes)
+            crc = s_crcTable[(crc ^ b) & 0xFF] ^ (crc >> 8);
+        return crc;
+    }
+
+    private static uint[] BuildCrcTable()
+    {
+        var table = new uint[256];
+        for (uint n = 0; n < 256; n++)
         {
-            crc = _crc[(crc ^ b) & 0xFF] ^ (crc >> 8);
+            uint c = n;
+            for (int k = 0; k < 8; k++)
+                c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[n] = c;
         }
-
-        foreach (byte b in data)
-        {
-            crc = _crc[(crc ^ b) & 0xFF] ^ (crc >> 8);
-        }
-
-        return crc ^ 0xFFFFFFFFu;
+        return table;
     }
 }
